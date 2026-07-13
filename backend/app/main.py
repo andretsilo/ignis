@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from app.config import get_settings
+from app.worker.tasks import start_job
+from uuid import uuid4
 import logging
 import sys
 
@@ -19,3 +21,9 @@ app = FastAPI()
 @app.get("/health")
 async def health():
     return {"status": "ok", "env": settings.app_env}
+
+@app.post("/jobs")
+async def run_job():
+    job_id = str(uuid4())
+    start_job.delay(job_id)
+    return {"job_id": job_id}
