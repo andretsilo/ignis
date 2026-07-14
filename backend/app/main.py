@@ -1,6 +1,8 @@
 from fastapi import FastAPI, UploadFile, status
+from contextlib import asynccontextmanager
 from app.config import get_settings
 from app.worker.tasks import start_job
+from app.db.session import sessionmanager
 from uuid import uuid4
 from pathlib import Path
 import logging
@@ -18,7 +20,13 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    if sessionmanager._engine is not None:
+        await sessionmanager.close()
+
+app = FastAPI(lifespan=lifespan, title='ignis')
 
 @app.get("/health")
 async def health():
@@ -36,5 +44,5 @@ async def upload_zip(zip: UploadFile):
         shutil.copyfileobj(zip.file, f)
         logger.info(f"Saved the zip file to: {f.name}")
 
-    #start_job.delay(job_id)
+    start_job.delay(job_id)
     return {"job_id": job_id}

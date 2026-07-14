@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     secret_key: str
     log_level: str = "INFO"
+    echo_sql: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",
