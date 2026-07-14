@@ -1,5 +1,7 @@
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+
 
 class Settings(BaseSettings):
     database_url: str
@@ -12,11 +14,12 @@ class Settings(BaseSettings):
     echo_sql: bool = False
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.getenv("ENV_FILE", ".env.local"),
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore"
+        extra="ignore",
     )
+
 
 @lru_cache
 def get_settings() -> Settings:
