@@ -1,9 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, status
 from app.config import get_settings
 from app.worker.tasks import start_job
 from uuid import uuid4
+from pathlib import Path
 import logging
 import sys
+import shutil
 
 settings = get_settings()
 
@@ -22,8 +24,17 @@ app = FastAPI()
 async def health():
     return {"status": "ok", "env": settings.app_env}
 
-@app.post("/jobs")
-async def run_job():
+@app.post("/jobs", status_code=status.HTTP_201_CREATED)
+async def upload_zip(zip: UploadFile):
     job_id = str(uuid4())
-    start_job.delay(job_id)
+    jobs_dir_path = Path(f"data/jobs/{job_id}")
+    jobs_dir_path.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Created folder for job: {job_id}")
+
+    with open(jobs_dir_path / "upload.zip", "wb") as f:
+        shutil.copyfileobj(zip.file, f)
+        logger.info(f"Saved the zip file to: {f.name}")
+
+    #start_job.delay(job_id)
     return {"job_id": job_id}
