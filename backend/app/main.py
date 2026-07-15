@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, status, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.expression import select
 from contextlib import asynccontextmanager
 from app.config import get_settings
 from app.worker.tasks import start_job
@@ -66,8 +67,10 @@ async def upload_zip(zip: UploadFile, db: AsyncSession = Depends(get_db_session)
 
 @app.get("/jobs")
 async def get_jobs(db: AsyncSession = Depends(get_db_session)):
-    pass
+    result = await db.execute(select(Job))
+    return result.scalars().all()
+    
 
 @app.get("/jobs/{job_id}")
-async def get_job(job_id: str):
-    pass
+async def get_job(job_id: str, db: AsyncSession = Depends(get_db_session)):
+    return await db.get(Job, job_id)
