@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     secret_key: str
     log_level: str = "INFO"
     echo_sql: bool = False
+    data_dir: str = "data/jobs"
 
     model_config = SettingsConfigDict(
         env_file=os.getenv("ENV_FILE", ".env.local"),

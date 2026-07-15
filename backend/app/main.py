@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.expression import select
 from contextlib import asynccontextmanager
 from app.config import get_settings
-from app.worker.tasks import start_job
+from app.worker.tasks import unzip_and_pull_image
 from app.db.session import sessionmanager, get_db_session
 from app.db.models import Job, JobStatus, SourceType
 from uuid import uuid4
@@ -39,7 +39,7 @@ async def health():
 @app.post("/jobs", status_code=status.HTTP_201_CREATED)
 async def upload_zip(zip: UploadFile, db: AsyncSession = Depends(get_db_session)):
     job_id = uuid4()
-    jobs_dir_path = Path(f"data/jobs/{str(job_id)}")
+    jobs_dir_path = Path(f"{settings.data_dir}/{str(job_id)}")
     jobs_dir_path.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Created folder for job: {job_id}")
@@ -62,7 +62,8 @@ async def upload_zip(zip: UploadFile, db: AsyncSession = Depends(get_db_session)
     await db.commit()
     logger.info(f"Persisted job: {job_id}")
 
-    start_job.delay(job_id)
+
+    unzip_and_pull_image.delay(job_id)
     return {"job_id": job_id}
 
 @app.get("/jobs")
