@@ -73,12 +73,18 @@ def unzip_and_pull_image(self, job_id: str):
             )
 
             job.container_id = container.id
+            job.updated_at = datetime.now(timezone.utc)
+            db.commit()  # persist container_id so cancel can find it immediately
+
             response = container.wait()
             exit_code = response["StatusCode"]
             error_message = container.logs().decode('utf-8') if exit_code != 0 else None
             job.exit_code = exit_code
             job.error_message = error_message
-            job.status = JobStatus.completed if exit_code == 0 else JobStatus.failed
+            if exit_code in (137, 143):
+                job.status = JobStatus.cancelled
+            else:
+                job.status = JobStatus.completed if exit_code == 0 else JobStatus.failed
             job.updated_at = datetime.now(timezone.utc)
             db.commit()
             container.remove()
