@@ -3,6 +3,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db.models import Job, JobStatus
 from app.config import get_settings
+from app.exceptions import JobNotCancellable, JobNotFound
 from pathlib import Path
 from docker.errors import ImageNotFound, APIError
 from datetime import datetime, timezone
@@ -48,11 +49,11 @@ def unzip_and_pull_image(self, job_id: str):
         try:
             job.status = JobStatus.running
             db.commit()
-            logger.info(f"Will mount voolume: {str(workspace_path)}")
+            logger.info(f"Will mount volume: {str(workspace_path)}")
             container = client.containers.run(
                 name=f"training-job-{job_id}",
                 image=job.image,
-                command=["sh", "-c", "pip install -r requirements.txt && python train.py"],
+                command=["sh", "-c", job.entrypoint],
                 volumes=[
                     "/var/lib/docker/volumes/ignis_job_data/_data:/data/jobs:rw",
                     "/var/lib/docker/volumes/ignis_job_data/_data/librocdxg.so:/opt/rocm/lib/librocdxg.so:ro",
@@ -71,6 +72,7 @@ def unzip_and_pull_image(self, job_id: str):
                 detach=True
             )
 
+            job.container_id = container.id
             response = container.wait()
             exit_code = response["StatusCode"]
             error_message = container.logs().decode('utf-8') if exit_code != 0 else None
@@ -86,7 +88,36 @@ def unzip_and_pull_image(self, job_id: str):
             job.status = JobStatus.failed
             job.error_message = error_message
             db.commit()
-        
+
+@celery_app.task(bind=True)
+def stop_container(self, job_id: str):
+    client = docker.from_env()
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+
+        if not job:
+            logger.error(f"stop_container: job {job_id} not found")
+            return
+
+        if job.status in [JobStatus.failed, JobStatus.cancelled, JobStatus.completed]:
+            logger.warning(f"stop_container: job {job_id} already finished ({job.status})")
+            return
+
+        if job.container_id:
+            try:
+                client.containers.get(job.container_id).stop()
+                logger.info(f"Stopped container for job: {job_id}")
+            except Exception as e:
+                logger.warning(f"Could not stop container for job {job_id}: {e}")
+        else:
+            # Job is queued or building with no container yet — just mark cancelled
+            logger.info(f"No container for job {job_id}, marking cancelled directly")
+
+        job.status = JobStatus.cancelled
+        job.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        logger.info(f"Cancelled job: {job_id}")
+
 def unzip_job_file(job_id: str) -> Path:
     zip_path = Path(f"{settings.data_dir}/{str(job_id)}/upload.zip")
     workspace_dir = Path(f"{settings.data_dir}/{str(job_id)}/workspace")

@@ -30,4 +30,9 @@ export const api = {
   getJob(id: string): Promise<Job> {
     return request<Job>(`/jobs/${id}`)
   },
+
+  /** Cancel a running or queued job */
+  cancelJob(id: string): Promise<void> {
+    return request<void>(`/jobs/${id}/cancel`, { method: 'POST' })
+  },
 }

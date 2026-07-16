@@ -42,7 +42,7 @@ services:
         condition: service_healthy
   worker:
     build:  ./backend
-    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2
     env_file: ./backend/.env
     volumes:
       - job_data:/data/jobs

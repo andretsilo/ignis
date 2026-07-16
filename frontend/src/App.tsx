@@ -2,14 +2,16 @@ import { NavLink, Outlet } from 'react-router-dom'
 
 function Nav() {
   const linkClass = ({ isActive }: { isActive: boolean }) =>
-    `text-sm transition-colors ${isActive ? 'text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`
+    `text-sm transition-colors ${isActive ? 'text-zinc-100 font-medium' : 'text-zinc-500 hover:text-zinc-300'}`
 
   return (
-    <header className="border-b border-zinc-800 bg-zinc-950">
+    <header className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-10">
       <div className="max-w-4xl mx-auto px-4 h-12 flex items-center gap-6">
-        <NavLink to="/jobs" className="font-semibold text-zinc-100 text-sm tracking-tight">
-          ignis
+        <NavLink to="/jobs" className="flex items-center gap-2 group">
+          <span className="text-orange-400 group-hover:text-orange-300 transition-colors text-base">🔥</span>
+          <span className="font-bold text-zinc-100 text-sm tracking-tight">ignis</span>
         </NavLink>
+        <div className="h-4 w-px bg-zinc-800" />
         <nav className="flex items-center gap-4">
           <NavLink to="/jobs"   className={linkClass}>Jobs</NavLink>
           <NavLink to="/submit" className={linkClass}>Submit</NavLink>
