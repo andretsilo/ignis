@@ -53,7 +53,7 @@ async def upload_zip(zip: UploadFile, db: AsyncSession = Depends(get_db_session)
         status=JobStatus.queued,
         source_type=SourceType.zip,
         image="rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1",
-        entrypoint="python train.py",
+        entrypoint="pip install -r requirements.txt && python train.py",
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc)
     )
@@ -61,7 +61,6 @@ async def upload_zip(zip: UploadFile, db: AsyncSession = Depends(get_db_session)
     db.add(job)
     await db.commit()
     logger.info(f"Persisted job: {job_id}")
-
 
     unzip_and_pull_image.delay(job_id)
     return {"job_id": job_id}
@@ -71,7 +70,6 @@ async def get_jobs(db: AsyncSession = Depends(get_db_session)):
     result = await db.execute(select(Job))
     return result.scalars().all()
     
-
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: str, db: AsyncSession = Depends(get_db_session)):
     return await db.get(Job, job_id)

@@ -113,6 +113,12 @@ This uses the ROCDXG method (`/dev/dxg` + DXCore), which is the production WSL2 
 
 Set `GPU_EXECUTOR=rocm_wsl2` in `.env`.
 
+6. Seed the ROCm libraries into the job data volume (required once, survives container rebuilds):
+   ```bash
+   bash scripts/seed-rocm-libs.sh
+   ```
+   This copies `librocdxg.so`, `libdxcore.so`, and the `rocdxg` directory into the shared job data volume so the worker can bind-mount them into training containers at runtime. Only needs to be run once — the files persist across restarts. Re-run if you wipe the volume with `docker compose down -v`.
+
 #### Path B — AMD GPU, DirectML (simpler; works on any AMD GPU, no WSL2 required)
 
 No WSL2 GPU setup needed. Works directly on Windows:

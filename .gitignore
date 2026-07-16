@@ -147,6 +147,9 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# ROCm WSL2 libs — copied from WSL2 at build time, not committed
+backend/rocm-libs/
+
 # Environments
 .env
 .env.local
