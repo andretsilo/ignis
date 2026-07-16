@@ -1,11 +1,13 @@
 from app.worker.celery_app import celery_app
 from app.config import get_settings
 from pathlib import Path
+import docker
 import zipfile
 import logging
 import sys
 
 settings = get_settings()
+client = docker.from_env()
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -20,6 +22,9 @@ logger = logging.getLogger(__name__)
 def unzip_and_pull_image(self, job_id: str):
     logger.info(f"Started job: {job_id}")
 
+    repository = "rocm/pytorch"
+    tag = "rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1"
+
     unzip_job_file(job_id)
 
 def unzip_job_file(job_id: str):
@@ -29,3 +34,6 @@ def unzip_job_file(job_id: str):
 
     with zipfile.ZipFile(zip_path , 'r') as zip_ref:
         zip_ref.extractall(workspace_dir)
+
+def build_and_pull_image(repository: str, tag: str):
+    image = client.images.pull(repository=repository, tag=tag)
