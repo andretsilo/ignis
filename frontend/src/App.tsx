@@ -1,8 +1,17 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useAuth } from './context/AuthContext'
 
 function Nav() {
+  const { logout } = useAuth()
+  const navigate   = useNavigate()
+
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `text-sm transition-colors ${isActive ? 'text-zinc-100 font-medium' : 'text-zinc-500 hover:text-zinc-300'}`
+
+  function handleLogout() {
+    logout()
+    navigate('/auth', { replace: true })
+  }
 
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-10">
@@ -12,10 +21,16 @@ function Nav() {
           <span className="font-bold text-zinc-100 text-sm tracking-tight">ignis</span>
         </NavLink>
         <div className="h-4 w-px bg-zinc-800" />
-        <nav className="flex items-center gap-4">
+        <nav className="flex items-center gap-4 flex-1">
           <NavLink to="/jobs"   className={linkClass}>Jobs</NavLink>
           <NavLink to="/submit" className={linkClass}>Submit</NavLink>
         </nav>
+        <button
+          onClick={handleLogout}
+          className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+        >
+          Sign out
+        </button>
       </div>
     </header>
   )

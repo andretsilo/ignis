@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db.session import sessionmanager
-from app.routers import jobs
+from app.routers import auth, jobs
 
 settings = get_settings()
 
@@ -43,4 +43,5 @@ async def health():
     return {"status": "ok", "env": settings.app_env}
 
 
+app.include_router(auth.router)
 app.include_router(jobs.router)

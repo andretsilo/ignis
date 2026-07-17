@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,9 +17,27 @@ class JobStatus(str, enum.Enum):
     failed = "failed"
     cancelled = "cancelled"
 
+
 class SourceType(str, enum.Enum):
     zip = "zip"
     git = "git"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
 
 class Job(Base):
     __tablename__ = "jobs"
@@ -28,6 +46,7 @@ class Job(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
 
+    # ownership
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     # status
