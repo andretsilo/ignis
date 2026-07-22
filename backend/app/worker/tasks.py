@@ -116,7 +116,6 @@ def stop_container(self, job_id: str):
             except Exception as e:
                 logger.warning(f"Could not stop container for job {job_id}: {e}")
         else:
-            # Job is queued or building with no container yet — just mark cancelled
             logger.info(f"No container for job {job_id}, marking cancelled directly")
 
         job.status = JobStatus.cancelled
