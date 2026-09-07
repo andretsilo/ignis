@@ -1,6 +1,8 @@
-import type { Job, SubmitJobResponse } from './types'
+import type { Job, SubmitJobResponse, ArtifactsResponse, SystemStats } from './types'
 
 const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
+const WS_BASE = (import.meta.env.VITE_WS_URL as string | undefined) ??
+  BASE_URL.replace(/^http/, 'ws')
 const TOKEN_KEY = 'ignis_token'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -15,7 +17,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await res.text().catch(() => res.statusText)
     throw new Error(`${res.status} ${text}`)
   }
-  // 204 No Content
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }
@@ -69,5 +70,26 @@ export const api = {
   /** Cancel a running or queued job */
   cancelJob(id: string): Promise<void> {
     return request<void>(`/jobs/${id}/cancel`, { method: 'POST' })
+  },
+
+  /** List all files for a completed job */
+  getArtifacts(id: string): Promise<ArtifactsResponse> {
+    return request<ArtifactsResponse>(`/jobs/${id}/artifacts`)
+  },
+
+  /** Return a download URL for a job artifact (includes auth token) */
+  getArtifactDownloadUrl(id: string, file: string): string {
+    const token = localStorage.getItem(TOKEN_KEY)
+    return `${BASE_URL}/jobs/${id}/artifacts/download?file=${encodeURIComponent(file)}&token=${token}`
+  },
+
+  /** Get system CPU / RAM / GPU stats */
+  getSystemStats(): Promise<SystemStats> {
+    return request<SystemStats>('/system/stats')
+  },
+
+  /** WebSocket URL for live job logs */
+  getWsUrl(jobId: string): string {
+    return `${WS_BASE}/ws/jobs/${jobId}`
   },
 }

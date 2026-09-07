@@ -8,6 +8,7 @@ import { AuthPage }      from './pages/AuthPage'
 import { JobListPage }   from './pages/JobListPage'
 import { JobDetailPage } from './pages/JobDetailPage'
 import { JobSubmitPage } from './pages/JobSubmitPage'
+import { HelpPage }      from './pages/HelpPage'
 import './index.css'
 
 const router = createBrowserRouter([
@@ -27,6 +28,7 @@ const router = createBrowserRouter([
       { path: 'jobs',     element: <JobListPage /> },
       { path: 'jobs/:id', element: <JobDetailPage /> },
       { path: 'submit',   element: <JobSubmitPage /> },
+      { path: 'help',     element: <HelpPage /> },
     ],
   },
 ])

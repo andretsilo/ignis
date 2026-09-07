@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:17-alpine
-    container_name: postgres
+    container_name: ignis-postgres
     ports:
       - "5432:5432"
     environment:
@@ -15,9 +15,11 @@ services:
       interval: 5s
       timeout: 30s
       retries: 5
+    restart: unless-stopped
+
   redis:
     image: redis:7.4-alpine
-    container_name: redis
+    container_name: ignis-redis
     ports:
       - '6379:6379'
     volumes:
@@ -28,8 +30,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
   backend:
     build: ./backend
+    container_name: ignis-backend
     ports:
       - "8000:80"
     env_file: ./backend/.env
@@ -40,8 +44,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
   worker:
-    build:  ./backend
+    build: ./backend
+    container_name: ignis-worker
     command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2
     env_file: ./backend/.env
     volumes:
@@ -52,6 +59,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Override at build time: VITE_API_URL=http://<your-ip>:8000 docker compose up --build
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
+    container_name: ignis-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:

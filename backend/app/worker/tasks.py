@@ -3,11 +3,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db.models import Job, JobStatus
 from app.config import get_settings
-from app.exceptions import JobNotCancellable, JobNotFound
+from app.executors.registry import get_executor
 from pathlib import Path
-from docker.errors import ImageNotFound, APIError
+from docker.errors import ImageNotFound
 from datetime import datetime, timezone
 import docker
+import redis as sync_redis
 import zipfile
 import logging
 import sys
@@ -26,6 +27,43 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
+def _stream_logs(client: docker.DockerClient, container, job_id: str, redis_client) -> None:
+    """
+    Stream container stdout/stderr to Redis in real time.
+
+    Uses the low-level attach API (raw socket) to avoid the multiplexed-frame
+    buffering issue that container.logs(stream=True) can exhibit.
+    Each newline-delimited chunk is published immediately.
+    """
+    channel = f"job:{job_id}:logs"
+    buffer = b""
+    try:
+        # attach returns a generator of raw bytes from the Docker daemon
+        for chunk in client.api.attach(
+            container.id,
+            stream=True,
+            logs=True,
+            stdout=True,
+            stderr=True,
+        ):
+            buffer += chunk
+            # Flush complete lines immediately
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                text = line.decode("utf-8", errors="replace").strip()
+                if text:
+                    redis_client.publish(channel, text)
+                    logger.debug("[job:%s] %s", job_id, text)
+        # Flush any remaining partial line
+        if buffer:
+            text = buffer.decode("utf-8", errors="replace").strip()
+            if text:
+                redis_client.publish(channel, text)
+    except Exception as exc:
+        logger.warning("Log streaming interrupted for job %s: %s", job_id, exc)
+
+
 @celery_app.task(bind=True)
 def unzip_and_pull_image(self, job_id: str):
     client = docker.from_env()
@@ -33,52 +71,52 @@ def unzip_and_pull_image(self, job_id: str):
         job = db.get(Job, job_id)
         job.status = JobStatus.building
         db.commit()
-        
-        logger.info(f"Started job: {job_id}")
+
+        logger.info("Started job: %s", job_id)
 
         try:
             workspace_path = unzip_job_file(job_id)
         except Exception as e:
-            logger.error(str(e) + f"\n in job: {job_id}")
+            logger.error("Unzip failed for job %s: %s", job_id, e)
             job.status = JobStatus.failed
+            job.error_message = str(e)
             db.commit()
             return
 
-        logger.info(f"Running container for job: {job_id}, image: {job.image}")
+        logger.info("Running container for job: %s, image: %s", job_id, job.image)
 
         try:
             job.status = JobStatus.running
             db.commit()
-            logger.info(f"Will mount volume: {str(workspace_path)}")
-            container = client.containers.run(
-                name=f"training-job-{job_id}",
+
+            executor = get_executor(settings.gpu_executor)
+            run_kwargs = executor.get_run_kwargs(
+                job_id=job_id,
+                workspace_path=str(workspace_path),
                 image=job.image,
-                command=["sh", "-c", job.entrypoint],
-                volumes=[
-                    "/var/lib/docker/volumes/ignis_job_data/_data:/data/jobs:rw",
-                    "/var/lib/docker/volumes/ignis_job_data/_data/librocdxg.so:/opt/rocm/lib/librocdxg.so:ro",
-                    "/var/lib/docker/volumes/ignis_job_data/_data/libdxcore.so:/usr/lib/libdxcore.so:ro",
-                    "/var/lib/docker/volumes/ignis_job_data/_data/rocdxg:/usr/share/rocdxg:ro",
-                ],
-                devices=["/dev/dxg"],
-                environment={
-                    "PYTHONUNBUFFERED": "1",
-                    "HSA_ENABLE_DXG_DETECTION": "1",
-                    "HSA_USE_DXG": "1"
-                },
-                ipc_mode="host",
-                shm_size="8G",
-                working_dir=str(workspace_path),
-                detach=True
+                entrypoint=job.entrypoint,
             )
+            container = client.containers.run(**run_kwargs)
 
             job.container_id = container.id
             job.updated_at = datetime.now(timezone.utc)
-            db.commit()  # persist container_id so cancel can find it immediately
+            db.commit()
 
-            response = container.wait()
-            exit_code = response["StatusCode"]
-            error_message = container.logs().decode('utf-8') if exit_code != 0 else None
+            # Stream logs to Redis in real time, then wait for exit
+            redis_client = sync_redis.Redis.from_url(settings.redis_url, decode_responses=True)
+            try:
+                _stream_logs(client, container, job_id, redis_client)
+            finally:
+                redis_client.close()
+
+            # After streaming ends the container has exited — get the exit code
+            container.reload()
+            exit_code = container.attrs["State"]["ExitCode"]
+
+            error_message = None
+            if exit_code not in (0, 137, 143):
+                error_message = container.logs(tail=200).decode("utf-8", errors="replace")
+
             job.exit_code = exit_code
             job.error_message = error_message
             if exit_code in (137, 143):
@@ -87,13 +125,24 @@ def unzip_and_pull_image(self, job_id: str):
                 job.status = JobStatus.completed if exit_code == 0 else JobStatus.failed
             job.updated_at = datetime.now(timezone.utc)
             db.commit()
-            container.remove()
-        except Exception as e:
-            error_message = f"Image not found for job: {job_id}" if isinstance(e, ImageNotFound) else str(e) + f"\n in job: {job_id}"
-            logger.error(error_message)
+
+            try:
+                container.remove()
+            except Exception:
+                pass
+
+        except ImageNotFound:
+            msg = f"Docker image not found: {job.image}"
+            logger.error(msg)
             job.status = JobStatus.failed
-            job.error_message = error_message
+            job.error_message = msg
             db.commit()
+        except Exception as e:
+            logger.error("Job %s failed: %s", job_id, e)
+            job.status = JobStatus.failed
+            job.error_message = str(e)
+            db.commit()
+
 
 @celery_app.task(bind=True)
 def stop_container(self, job_id: str):
@@ -102,46 +151,43 @@ def stop_container(self, job_id: str):
         job = db.get(Job, job_id)
 
         if not job:
-            logger.error(f"stop_container: job {job_id} not found")
+            logger.error("stop_container: job %s not found", job_id)
             return
 
         if job.status in [JobStatus.failed, JobStatus.cancelled, JobStatus.completed]:
-            logger.warning(f"stop_container: job {job_id} already finished ({job.status})")
+            logger.warning("stop_container: job %s already finished (%s)", job_id, job.status)
             return
 
         if job.container_id:
             try:
                 client.containers.get(job.container_id).stop()
-                logger.info(f"Stopped container for job: {job_id}")
+                logger.info("Stopped container for job: %s", job_id)
             except Exception as e:
-                logger.warning(f"Could not stop container for job {job_id}: {e}")
+                logger.warning("Could not stop container for job %s: %s", job_id, e)
         else:
-            # Job is queued or building with no container yet — just mark cancelled
-            logger.info(f"No container for job {job_id}, marking cancelled directly")
+            logger.info("No container for job %s, marking cancelled directly", job_id)
 
         job.status = JobStatus.cancelled
         job.updated_at = datetime.now(timezone.utc)
         db.commit()
-        logger.info(f"Cancelled job: {job_id}")
+        logger.info("Cancelled job: %s", job_id)
+
 
 def unzip_job_file(job_id: str) -> Path:
-    zip_path = Path(f"{settings.data_dir}/{str(job_id)}/upload.zip")
-    workspace_dir = Path(f"{settings.data_dir}/{str(job_id)}/workspace")
+    zip_path = Path(f"{settings.data_dir}/{job_id}/upload.zip")
+    workspace_dir = Path(f"{settings.data_dir}/{job_id}/workspace")
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Created workspace folder for job: {job_id}")
+    logger.info("Extracting ZIP for job: %s", job_id)
 
-    with zipfile.ZipFile(zip_path , 'r') as zip_ref:
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(workspace_dir)
 
-    logger.info(f"Extracted everything to: {str(workspace_dir)}")
-
+    # Unwrap single top-level directory if present (e.g. GitHub ZIP exports)
     contents = list(workspace_dir.iterdir())
     while len(contents) == 1 and contents[0].is_dir():
-        logger.info("Found nested directories.")
         workspace_dir = contents[0]
         contents = list(workspace_dir.iterdir())
-    logger.info(f"New workspace will be: {str(workspace_dir)}")
 
+    logger.info("Workspace ready at: %s", workspace_dir)
     return workspace_dir
-

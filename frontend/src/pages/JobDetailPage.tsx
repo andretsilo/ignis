@@ -2,14 +2,19 @@ import { useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api'
 import { useInterval } from '../hooks/useInterval'
+import { useJobSocket } from '../hooks/useJobSocket'
 import { StatusBadge } from '../components/StatusBadge'
 import { RelativeTime } from '../components/RelativeTime'
 import { Spinner, ErrorMessage, Field } from '../components/ui'
+import { LogViewer } from '../components/LogViewer'
+import { ArtifactsPanel } from '../components/ArtifactsPanel'
 import type { Job } from '../types'
 
 const POLL_MS = 2000
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
 const CANCELLABLE_STATUSES = new Set(['queued', 'building', 'running'])
+// WebSocket is useful while the container is running or building
+const ACTIVE_STATUSES = new Set(['building', 'running'])
 
 export function JobDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -29,7 +34,13 @@ export function JobDetailPage() {
   }, [id])
 
   const isTerminal = job ? TERMINAL_STATUSES.has(job.status) : false
+  const isActive   = job ? ACTIVE_STATUSES.has(job.status) : false
+
+  // Poll job metadata — stop once terminal
   useInterval(fetchJob, isTerminal ? null : POLL_MS)
+
+  // Live log stream via WebSocket — only when container is actively running
+  const { lines: logLines } = useJobSocket(id, isActive)
 
   async function handleCancel() {
     if (!id || !job) return
@@ -46,7 +57,7 @@ export function JobDetailPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto py-10 px-4">
+    <div className="max-w-3xl mx-auto py-10 px-4">
 
       <div className="mb-6">
         <Link to="/jobs" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1">
@@ -99,6 +110,11 @@ export function JobDetailPage() {
             </div>
           </div>
 
+          {/* Live logs — shown when building/running, or when we have lines accumulated */}
+          {(isActive || logLines.length > 0) && (
+            <LogViewer lines={logLines} />
+          )}
+
           {/* Error output */}
           {job.error_message && (
             <div className="rounded-lg border border-red-900 bg-red-950/30 overflow-hidden">
@@ -118,6 +134,14 @@ export function JobDetailPage() {
             <div className="rounded-lg border border-green-900 bg-green-950/30 px-4 py-3 flex items-center gap-2">
               <span className="text-green-400">✓</span>
               <span className="text-sm text-green-300">Training completed successfully with exit code 0.</span>
+            </div>
+          )}
+
+          {/* Artifacts — shown for completed/failed jobs */}
+          {(job.status === 'completed' || job.status === 'failed') && (
+            <div>
+              <h2 className="text-sm font-medium text-zinc-400 mb-3">Output files</h2>
+              <ArtifactsPanel jobId={job.id} />
             </div>
           )}
 

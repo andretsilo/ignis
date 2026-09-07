@@ -41,7 +41,21 @@ export function AuthPage() {
       login(access_token)
       navigate('/jobs', { replace: true })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong.')
+      const raw = err instanceof Error ? err.message : ''
+      // Parse friendly messages from HTTP error responses
+      let friendly = 'Something went wrong. Please try again.'
+      try {
+        const jsonStart = raw.indexOf('{')
+        if (jsonStart !== -1) {
+          const body = JSON.parse(raw.slice(jsonStart))
+          if (body.detail) friendly = body.detail
+        }
+      } catch { /* ignore */ }
+      if (raw.startsWith('401')) friendly = 'Incorrect username or password.'
+      if (raw.startsWith('409')) friendly = 'That username is already taken.'
+      if (raw.startsWith('422')) friendly = 'Password must be at least 8 characters.'
+      if (raw.startsWith('5'))   friendly = 'Server error. Try again in a moment.'
+      setError(friendly)
     } finally {
       setLoading(false)
     }

@@ -1,4 +1,5 @@
 import shutil
+import uuid
 import logging
 from uuid import uuid4
 from pathlib import Path
@@ -45,6 +46,7 @@ async def create_job(
 
     db.add(job)
     await db.commit()
+    await db.refresh(job)  # load all columns while session is still open
     logger.info(f"Persisted job {job_id} for user {current_user.username}")
 
     unzip_and_pull_image.delay(str(job_id))
@@ -61,7 +63,12 @@ async def list_jobs(db: AsyncSession, current_user: User) -> list[Job]:
 
 
 async def get_job(job_id: str, db: AsyncSession, current_user: User) -> Job:
-    job = await db.get(Job, job_id)
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    job = await db.get(Job, job_uuid)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     if job.user_id != current_user.id:

@@ -4,6 +4,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
+from app.schemas import TokenOut
 from app.services import auth as auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -31,7 +32,7 @@ class RegisterRequest(BaseModel):
         return v
 
 
-@router.post("/login")
+@router.post("/login", response_model=TokenOut)
 async def login(
     form: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db_session),
@@ -39,7 +40,7 @@ async def login(
     return await auth_service.login(form.username, form.password, db)
 
 
-@router.post("/register", status_code=201)
+@router.post("/register", status_code=201, response_model=TokenOut)
 async def register(
     body: RegisterRequest,
     db: AsyncSession = Depends(get_db_session),

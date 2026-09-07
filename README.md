@@ -1,235 +1,221 @@
-# ignis
+# ignis 🔥
 
-Self-hosted, hardware-agnostic remote GPU training platform. Submit deep learning jobs from anywhere, run them in isolated Docker containers on your own machine (any OS, any GPU vendor), and stream logs/metrics live via WebSockets.
+Self-hosted GPU training platform. Submit deep learning jobs from any device, run them in isolated Docker containers on your own hardware, and stream logs live to your browser.
 
 ---
 
 ## What it does
 
-You open a dashboard on any device, upload a training script or paste a Git URL, and hit Submit. The job runs in an isolated Docker container on your GPU machine. Logs and metrics stream live to your browser. When training finishes, you download the results. Nobody outside your explicit invite list can reach the machine at all.
+You open the dashboard, upload a ZIP containing your training script, choose a Docker image, and hit Submit. ignis:
 
-**Stack:** FastAPI · React/TS · Celery · Redis · PostgreSQL · Docker · WebSockets · Tailscale
+- Queues the job and dispatches it to a Celery worker
+- Runs the container with the right GPU flags (ROCm / CUDA / CPU)
+- Streams stdout/stderr live to your browser via WebSockets + Redis Pub/Sub
+- Records exit codes, error output, and all output files as downloadable artifacts
+- Enforces per-user job isolation — each account only sees its own jobs
 
----
-
-## Prerequisites
-
-One-time setup per machine. The application code is the same regardless of OS or GPU vendor — only these steps differ.
-
-### 1. Docker Desktop (Windows)
-
-- Download and install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- During setup, choose the **WSL2 backend** (not Hyper-V)
-- Verify:
-  ```
-  docker info
-  ```
-  Should show `Context: desktop-linux` and a kernel version ending in `-WSL2`
-
-### 2. WSL2
-
-Docker Desktop installs WSL2 automatically. Make sure it is the default version:
-
-```powershell
-wsl --set-default-version 2
-```
-
-Install a clean Ubuntu 24.04 distro if you don't have one:
-
-```powershell
-wsl --install -d Ubuntu-24.04
-```
-
-### 3. GPU driver setup
-
-Pick the path that matches your hardware.
-
-#### Path A — AMD GPU, ROCm-in-WSL2 via ROCDXG (RDNA4 / RX 9060 XT confirmed working)
-
-This uses the ROCDXG method (`/dev/dxg` + DXCore), which is the production WSL2 path as of ROCm 7.2.1. It does **not** use `/dev/kfd` — that is for native Linux only.
-
-**Requirements:**
-- AMD Adrenalin driver ≥ 26.2.2 on Windows (26.10.x confirmed working)
-- ROCm 7.2.1
-- librocdxg v1.2.0
-- Ubuntu 24.04 WSL2
-
-**Steps inside WSL2:**
-
-1. Verify the GPU bridge device exists:
-   ```bash
-   ls -la /dev/dxg
-   ```
-   Expected: `crw-rw-rw- 10,258`. If missing, reinstall the AMD Adrenalin driver on Windows.
-
-2. Add the ROCm 7.2.1 repo and install the runtime:
-   ```bash
-   wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
-     gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
-
-   echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] \
-     https://repo.radeon.com/rocm/apt/7.2.1 noble main" | \
-     sudo tee /etc/apt/sources.list.d/rocm.list
-
-   sudo apt update
-   sudo apt install rocminfo rocm-hip-runtime
-   ```
-
-3. Install librocdxg v1.2.0 (pre-built `.deb`):
-   ```bash
-   wget https://github.com/ROCm/librocdxg/releases/download/v1.2.0/librocdxg_1.2.0_amd64.deb
-   sudo apt install ./librocdxg_1.2.0_amd64.deb
-   sudo cp /usr/lib/librocdxg.so* /opt/rocm-7.2.1/lib/
-   sudo ldconfig
-   ```
-
-4. Verify the GPU is visible:
-   ```bash
-   HSA_ENABLE_DXG_DETECTION=1 rocminfo | grep -A3 "Agent 2"
-   ```
-   Expected:
-   ```
-   Name:                    gfx1200
-   Marketing Name:          AMD Radeon RX 9060 XT
-   ```
-
-5. Run the PyTorch smoke test:
-   ```bash
-   docker run --rm \
-     --device=/dev/dxg \
-     -v /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so \
-     -v /opt/rocm/lib/librocdxg.so:/usr/lib/librocdxg.so \
-     -v /opt/rocm/share/rocdxg/dids.conf:/usr/share/rocdxg/dids.conf \
-     -e HSA_ENABLE_DXG_DETECTION=1 \
-     --ipc=host --shm-size 8G \
-     rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1 \
-     python3 -c "
-   import torch
-   print('GPU available:', torch.cuda.is_available())
-   print('Device:', torch.cuda.get_device_name(0))
-   "
-   ```
-   Expected: `GPU available: True` / `Device: AMD Radeon RX 9060 XT`
-
-Set `GPU_EXECUTOR=rocm_wsl2` in `.env`.
-
-6. Seed the ROCm libraries into the job data volume (required once, survives container rebuilds):
-   ```bash
-   bash scripts/seed-rocm-libs.sh
-   ```
-   This copies `librocdxg.so`, `libdxcore.so`, and the `rocdxg` directory into the shared job data volume so the worker can bind-mount them into training containers at runtime. Only needs to be run once — the files persist across restarts. Re-run if you wipe the volume with `docker compose down -v`.
-
-#### Path B — AMD GPU, DirectML (simpler; works on any AMD GPU, no WSL2 required)
-
-No WSL2 GPU setup needed. Works directly on Windows:
-
-```powershell
-pip install torch-directml
-python -c "import torch_directml; print(torch_directml.device())"
-```
-
-Use this if ROCm-in-WSL2 is unstable on your hardware. Set `GPU_EXECUTOR=directml` in `.env`.
-
-#### Path C — NVIDIA GPU, CUDA-in-WSL2
-
-Install the [NVIDIA WSL2 CUDA driver](https://developer.nvidia.com/cuda/wsl) on Windows. Do **not** install CUDA inside WSL2 — the Windows driver handles it. Verify inside WSL2:
-
-```bash
-nvidia-smi
-```
-
-Set `GPU_EXECUTOR=cuda_wsl2` in `.env`.
-
-#### Path D — CPU only
-
-No GPU setup required. Set `GPU_EXECUTOR=cpu` in `.env`. Slow but always works.
-
-### 4. Tailscale
-
-- Install [Tailscale](https://tailscale.com/download) on the GPU machine and on every client device
-- Log in and join the same tailnet, or use node-sharing to grant access to a specific person without adding them to your whole tailnet
-- Verify the client can ping the GPU machine's Tailscale IP before continuing
+**Stack:** FastAPI · React 18 / TypeScript · Celery · Redis · PostgreSQL · Docker · WebSockets · Tailscale
 
 ---
 
-## Running the platform
+## Architecture
 
-### 1. Clone and configure
+```
+Browser (React + WebSocket)
+    │
+    ▼
+FastAPI (HTTP + /ws/jobs/{id})
+    │               │
+    ▼               ▼
+PostgreSQL      Redis Pub/Sub
+    │               ▲
+    ▼               │
+Celery Worker ──────┘   (publishes log lines on job:<id>:logs)
+    │
+    ▼
+Docker container (training job)
+    └── /dev/dxg (ROCm/WSL2) | NVIDIA GPU | no GPU
+```
+
+The worker publishes each log line to `job:<id>:logs` on Redis. The FastAPI WebSocket handler subscribes to that channel and fans each message out to all connected browser clients in real time.
+
+---
+
+## GPU support
+
+| Executor | Hardware | How it works |
+|---|---|---|
+| `rocm_wsl2` | AMD GPU on Windows/WSL2 | `/dev/dxg` + librocdxg (ROCDXG method). Confirmed on RX 9060 XT (gfx1200), ROCm 7.2.1. |
+| `cuda` | NVIDIA GPU | nvidia-container-toolkit, standard `--gpus all` passthrough. |
+| `cpu` | Any machine | No GPU — works anywhere Docker runs. Slow but always works. |
+
+Set `GPU_EXECUTOR` in `backend/.env` to match your hardware.
+
+---
+
+## Quick start
+
+### Prerequisites
+
+- Docker Desktop (WSL2 backend on Windows) or Docker Engine on Linux
+- Git
+
+### 1. Clone
 
 ```bash
 git clone https://github.com/youruser/ignis.git
 cd ignis
 ```
 
-Copy the example env file and fill in your values:
+### 2. Configure
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-Edit `backend/.env`:
+Edit `backend/.env` and set a real `SECRET_KEY`:
 
-```env
-DATABASE_URL=postgresql://ignis:ignis@postgres:5432/ignis
-ALEMBIC_DATABASE_URL=postgresql://ignis:ignis@localhost:5432/ignis
-REDIS_URL=redis://redis:6379/0
-DATA_DIR=/data/jobs
-GPU_EXECUTOR=rocm_wsl2         # change to match your hardware (see above)
-APP_ENV=development
-SECRET_KEY=replace-this-with-a-long-random-string
-LOG_LEVEL=INFO
-```
-
-`SECRET_KEY` signs JWT tokens — generate a real one:
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-### 2. Start the stack
+Minimum config:
+
+```env
+DATABASE_URL=postgresql+asyncpg://ignis:ignis@postgres:5432/ignis
+REDIS_URL=redis://redis:6379/0
+DATA_DIR=/data/jobs
+GPU_EXECUTOR=cpu          # cpu | cuda | rocm_wsl2
+SECRET_KEY=<your-generated-key>
+```
+
+### 3. Start
 
 ```bash
 docker compose up -d
 ```
 
-This starts: PostgreSQL, Redis, the FastAPI backend, and the Celery worker.
+This starts PostgreSQL, Redis, the FastAPI backend, the Celery worker, and the React frontend.
 
-Verify everything is running:
-```bash
-docker compose ps
-```
-
-All four services should show `Up (healthy)` or `Up`.
-
-### 3. Run database migrations
+### 4. Run database migrations
 
 ```bash
-cd backend
-alembic upgrade head
+docker compose exec backend alembic upgrade head
 ```
 
-This creates all tables in PostgreSQL. Run this once on first setup, and again after any future schema changes.
+### 5. Open the app
 
-### 4. Verify
+- **Frontend:** http://localhost:3000
+- **API docs:** http://localhost:8000/docs
 
-Open [http://localhost:8000/docs](http://localhost:8000/docs) — you should see the FastAPI interactive docs.
-
-Check worker logs to confirm Celery connected:
-```bash
-docker compose logs worker --tail=20
-```
-Expected: `Connected to redis://redis:6379/0` and `celery@... ready.`
+Create an account on the login screen, then submit a training job.
 
 ---
 
-## After a reboot
+## Remote access (Tailscale)
 
-Docker Desktop's WSL integration sometimes resets after a system restart. If containers fail to start or the GPU is not visible:
+ignis is designed to run behind [Tailscale](https://tailscale.com/download). Install it on the GPU machine and on your client device, join the same tailnet, and navigate to `http://<tailscale-ip>:3000`.
 
-1. Open Docker Desktop → Settings → Resources → WSL Integration
-2. Toggle **Ubuntu-24.04** ON → Apply & Restart
-3. Wait ~30 seconds, then `docker compose up -d`
+To point the frontend at a remote backend at build time:
 
-For the full restart runbook see [`architecture/WSL-ROCM-RESTART.md`](architecture/WSL-ROCM-RESTART.md).
+```bash
+VITE_API_URL=http://<tailscale-ip>:8000 VITE_WS_URL=ws://<tailscale-ip>:8000 docker compose up --build
+```
+
+---
+
+## AMD ROCm on Windows/WSL2 (confirmed working)
+
+Validated setup:
+
+| Component | Version |
+|---|---|
+| GPU | AMD Radeon RX 9060 XT (gfx1200 / RDNA4, 16 GB) |
+| ROCm | 7.2.1 via ROCDXG (`/dev/dxg` + librocdxg v1.2.0) |
+| AMD Adrenalin driver | 26.10.x |
+| WSL2 distro | Ubuntu 24.04, kernel 6.18.x |
+
+After ROCm is set up in WSL2, seed the libraries into the Docker volume:
+
+```bash
+bash scripts/seed-rocm-libs.sh
+```
+
+Set `GPU_EXECUTOR=rocm_wsl2` in `backend/.env`.
+
+See [architecture/WSL-ROCM-RESTART.md](architecture/WSL-ROCM-RESTART.md) for the full setup runbook and the post-reboot checklist.
+
+---
+
+## Development setup
+
+### Backend
+
+Requires Python 3.12.
+
+```bash
+# Start infrastructure only
+docker compose up postgres redis -d
+
+cd backend
+python -m venv .venv
+
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
+
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env: set ALEMBIC_DATABASE_URL=postgresql://ignis:ignis@localhost:5432/ignis
+
+alembic upgrade head
+fastapi dev app/main.py        # hot reload on :8000
+```
+
+Celery worker (separate terminal):
+
+```bash
+celery -A app.worker.celery_app worker --loglevel=info
+```
+
+### Frontend
+
+Requires Node.js 20+.
+
+```bash
+cd frontend
+npm install
+npm run dev        # hot reload on :5173
+```
+
+---
+
+## Testing
+
+### Backend
+
+```bash
+cd backend
+# Install test deps if you haven't (one-time):
+.venv\Scripts\pip install -r requirements-dev.txt   # Windows
+# or: .venv/bin/pip install -r requirements-dev.txt  # Linux/macOS
+
+.venv\Scripts\pytest tests/ -v      # Windows
+# or:
+.venv/bin/pytest tests/ -v          # Linux/macOS
+```
+
+Tests use SQLite in-memory — no running Postgres required. 12 tests covering: auth flow, JWT validation, job isolation, executor registry.
+
+### Frontend
+
+```bash
+cd frontend
+npm test
+```
+
+14 component/page smoke tests covering: StatusBadge all statuses, LogViewer ANSI stripping + auto-scroll, AuthPage form validation.
 
 ---
 
@@ -239,20 +225,70 @@ For the full restart runbook see [`architecture/WSL-ROCM-RESTART.md`](architectu
 ignis/
 ├── backend/
 │   ├── app/
-│   │   ├── db/
-│   │   │   ├── base.py          # SQLAlchemy declarative base
-│   │   │   └── models.py        # Job model and enums
-│   │   ├── worker/
-│   │   │   ├── celery_app.py    # Celery instance + config
-│   │   │   └── tasks.py         # Background tasks (run_job, ...)
-│   │   ├── config.py            # Pydantic settings
-│   │   └── main.py              # FastAPI app + routes
-│   ├── alembic/                 # Database migrations
+│   │   ├── auth/           # JWT + bcrypt security, dependency injection
+│   │   ├── db/             # SQLAlchemy models (User, Job) + async session
+│   │   ├── executors/      # GPU executor abstraction (cpu, cuda, rocm_wsl2)
+│   │   ├── routers/        # FastAPI routers (auth, jobs, ws, artifacts, system)
+│   │   ├── services/       # Business logic (auth, jobs)
+│   │   ├── worker/         # Celery app + tasks (runs Docker containers)
+│   │   ├── config.py       # Pydantic settings from .env
+│   │   ├── main.py         # FastAPI app, CORS, router registration
+│   │   └── schemas.py      # Pydantic response schemas
+│   ├── alembic/            # DB migrations
+│   ├── tests/              # pytest tests (SQLite in-memory)
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── .env                     # Not committed — copy from .env.example
-├── docker-compose.yml
-└── architecture/                # Design docs, diagrams, runbooks
+│   └── .env.example
+├── frontend/
+│   ├── src/
+│   │   ├── components/     # StatusBadge, LogViewer, ArtifactsPanel, SystemGauges
+│   │   ├── context/        # AuthContext (JWT storage)
+│   │   ├── hooks/          # useInterval, useJobSocket
+│   │   ├── pages/          # AuthPage, JobListPage, JobDetailPage, JobSubmitPage, HelpPage
+│   │   ├── api.ts          # Typed fetch wrapper
+│   │   └── types.ts        # Shared TypeScript types
+│   ├── Dockerfile          # Multi-stage: build → nginx
+│   ├── nginx.conf
+│   └── .env.example
+├── scripts/
+│   └── seed-rocm-libs.sh   # Copy ROCm libs into Docker volume (AMD/WSL2 only)
+├── architecture/           # Design docs, PRD, diagrams, ROCm runbooks
+└── docker-compose.yml      # All 5 services: postgres, redis, backend, worker, frontend
 ```
 
 ---
+
+## API reference
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/auth/register` | — | Create account, returns JWT |
+| `POST` | `/auth/login` | — | Sign in, returns JWT |
+| `GET` | `/jobs` | ✓ | List your jobs |
+| `POST` | `/jobs` | ✓ | Submit a new job (multipart: zip, image, entrypoint) |
+| `GET` | `/jobs/{id}` | ✓ | Get job details |
+| `POST` | `/jobs/{id}/cancel` | ✓ | Cancel a running job |
+| `GET` | `/jobs/{id}/artifacts` | ✓ | List output files |
+| `GET` | `/jobs/{id}/artifacts/download?file=<path>` | ✓ | Download a file |
+| `WS` | `/ws/jobs/{id}` | — | Live log stream |
+| `GET` | `/system/stats` | — | CPU / RAM / GPU metrics |
+
+Full interactive docs at `/docs` when the backend is running.
+
+---
+
+## Training script contract
+
+Your script runs inside a Docker container. The working directory is the root of your unzipped ZIP.
+
+- Exit code `0` → job marked **completed**
+- Any other exit code → job marked **failed**; the last 200 lines of stdout/stderr are saved
+- Exit codes `137` / `143` → job marked **cancelled** (SIGKILL / SIGTERM)
+- `PYTHONUNBUFFERED=1` is always set so output appears in real time
+- All files written to the working directory appear as downloadable artifacts
+
+---
+
+## License
+
+MIT
